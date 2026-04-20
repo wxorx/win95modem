@@ -1,0 +1,149 @@
+diff --git src/core/ipv4/etharp.c src/core/ipv4/etharp.c
+index 58d62f41..c74f1889 100644
+--- src/core/ipv4/etharp.c
++++ src/core/ipv4/etharp.c
+@@ -685,6 +685,14 @@ etharp_input(struct pbuf *p, struct netif *netif)
+     /* ARP packet directed to us? */
+     for_us = (u8_t)ip4_addr_cmp(&dipaddr, netif_ip4_addr(netif));
+   }
++#if ARP_PROXYARP_SUPPORT
++  if (netif->flags & NETIF_FLAG_PROXYARP) {
++    /*
++      allow answering ARP queries for a configured proxy arp address
++    */
++    for_us |= (u8_t)ip4_addr_cmp(&dipaddr, netif_ip4_proxyarp(netif));
++  }
++#endif
+ 
+   /* ARP message directed to us?
+       -> add IP address in ARP cache; assume requester wants to talk to us,
+@@ -708,7 +716,11 @@ etharp_input(struct pbuf *p, struct netif *netif)
+         /* send ARP response */
+         etharp_raw(netif,
+                    (struct eth_addr *)netif->hwaddr, &hdr->shwaddr,
++#if ARP_PROXYARP_SUPPORT
++                   (struct eth_addr *)netif->hwaddr, &dipaddr,
++#else
+                    (struct eth_addr *)netif->hwaddr, netif_ip4_addr(netif),
++#endif
+                    &hdr->shwaddr, &sipaddr,
+                    ARP_REPLY);
+         /* we are not configured? */
+diff --git src/core/netif.c src/core/netif.c
+index 9375e8ed..c8b46480 100644
+--- src/core/netif.c
++++ src/core/netif.c
+@@ -736,6 +736,23 @@ netif_set_addr(struct netif *netif, const ip4_addr_t *ipaddr, const ip4_addr_t *
+   }
+ #endif
+ }
++
++#if ARP_PROXYARP_SUPPORT
++/**
++ * @ingroup netif_ip4
++ * set a proxyarp IP on an interface
++ *
++ * @param netif the network interface to change
++ * @param proxyarp_ip the new proxyarp address
++ */
++void
++netif_set_proxyarp(struct netif *netif, const ip4_addr_t *proxyarp_ip)
++{
++    netif->proxyarp_ip = *((ip_addr_t *)proxyarp_ip);
++    netif->flags |= NETIF_FLAG_PROXYARP;
++}
++#endif /* ARP_PROXYARP_SUPPORT */
++
+ #endif /* LWIP_IPV4*/
+ 
+ /**
+diff --git src/include/lwip/netif.h src/include/lwip/netif.h
+index 4cc59479..9ee791a4 100644
+--- src/include/lwip/netif.h
++++ src/include/lwip/netif.h
+@@ -105,6 +105,11 @@ extern "C" {
+ /** If set, the netif has MLD6 capability.
+  * Set by the netif driver in its init function. */
+ #define NETIF_FLAG_MLD6         0x40U
++/** If set then the proxyarp_ip in the netif has been set.
++ * set by netif_set_proxyarp()
++*/
++#define NETIF_FLAG_PROXYARP     0x80U
++
+ 
+ /**
+  * @}
+@@ -268,6 +273,9 @@ struct netif {
+   ip_addr_t ip_addr;
+   ip_addr_t netmask;
+   ip_addr_t gw;
++#if ARP_PROXYARP_SUPPORT
++  ip_addr_t proxyarp_ip; /* valid if NETIF_FLAG_PROXYARP set */
++#endif
+ #endif /* LWIP_IPV4 */
+ #if LWIP_IPV6
+   /** Array of IPv6 addresses for this netif. */
+@@ -454,6 +462,13 @@ void netif_set_gw(struct netif *netif, const ip4_addr_t *gw);
+ #define netif_ip_netmask4(netif) ((const ip_addr_t*)&((netif)->netmask))
+ /** @ingroup netif_ip4 */
+ #define netif_ip_gw4(netif)      ((const ip_addr_t*)&((netif)->gw))
++
++#if ARP_PROXYARP_SUPPORT
++/* support for a single proxy ARP IP address */
++void netif_set_proxyarp(struct netif *netif, const ip4_addr_t *proxyarp_ip);
++#define netif_ip4_proxyarp(netif) ((const ip4_addr_t*)ip_2_ip4(&((netif)->proxyarp_ip)))
++#define netif_ip_proxyarp4(netif) ((const ip_addr_t*)&((netif)->proxyarp_ip))
++#endif /* ARP_PROXYARP_SUPPORT */
+ #endif /* LWIP_IPV4 */
+ 
+ #define netif_set_flags(netif, set_flags)     do { (netif)->flags = (u8_t)((netif)->flags |  (set_flags)); } while(0)
+diff --git src/include/lwip/opt.h src/include/lwip/opt.h
+index 99eb4979..84dda035 100644
+--- src/include/lwip/opt.h
++++ src/include/lwip/opt.h
+@@ -662,6 +662,14 @@
+ #if !defined ARP_QUEUE_LEN || defined __DOXYGEN__
+ #define ARP_QUEUE_LEN                   3
+ #endif
++/**
++ * ARP_PROXYARP_SUPPORT: Enable proxy ARP functonality. This allows
++ * for netif_set_proxyarp() to add an additional IP4 address to a
++ * network interface which will be responded to for ARP queries
++ */
++#if !defined ARP_PROXYARP_SUPPORT || defined __DOXYGEN__
++#define ARP_PROXYARP_SUPPORT            1
++#endif
+ 
+ /**
+  * ETHARP_SUPPORT_VLAN==1: support receiving and sending ethernet packets with
+@@ -696,7 +704,7 @@
+  * entries (using etharp_add_static_entry/etharp_remove_static_entry).
+  */
+ #if !defined ETHARP_SUPPORT_STATIC_ENTRIES || defined __DOXYGEN__
+-#define ETHARP_SUPPORT_STATIC_ENTRIES   0
++#define ETHARP_SUPPORT_STATIC_ENTRIES   1
+ #endif
+ 
+ /** ETHARP_TABLE_MATCH_NETIF==1: Match netif for ARP table entries.
+@@ -733,7 +741,7 @@
+  * interface, define this to 0.
+  */
+ #if !defined IP_FORWARD || defined __DOXYGEN__
+-#define IP_FORWARD                      0
++#define IP_FORWARD                      1
+ #endif
+ 
+ /**
+diff --git src/netif/ppp/auth.c src/netif/ppp/auth.c
+index c8673ad0..8ba7ed5d 100644
+--- src/netif/ppp/auth.c
++++ src/netif/ppp/auth.c
+@@ -1003,7 +1003,7 @@ void continue_networks(ppp_pcb *pcb) {
+  *      1: Authentication succeeded.
+  * In either case, msg points to an appropriate message and msglen to the message len.
+  */
+-int auth_check_passwd(ppp_pcb *pcb, char *auser, int userlen, char *apasswd, int passwdlen, const char **msg, int *msglen) {
++int __attribute__ ((weak)) auth_check_passwd(ppp_pcb *pcb, char *auser, int userlen, char *apasswd, int passwdlen, const char **msg, int *msglen) {
+   int secretuserlen;
+   int secretpasswdlen;
+ 

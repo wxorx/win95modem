@@ -1,0 +1,198 @@
+diff --git components/esp_netif/include/esp_netif_ppp.h components/esp_netif/include/esp_netif_ppp.h
+index 159388e80e..4aaf820643 100644
+--- components/esp_netif/include/esp_netif_ppp.h
++++ components/esp_netif/include/esp_netif_ppp.h
+@@ -100,6 +100,10 @@ typedef enum {
+  */
+ esp_err_t esp_netif_ppp_set_auth(esp_netif_t *netif, esp_netif_auth_type_t authtype, const char *user, const char *passwd);
+ 
++#if PPP_SERVER
++esp_err_t esp_netif_ppp_start_server(esp_netif_t *netif, esp_ip4_addr_t localaddr, esp_ip4_addr_t remoteaddr, esp_ip4_addr_t dnsaddr1, esp_ip4_addr_t dnsaddr2, const char *login, const char *password, int auth_req);
++#endif
++
+ /** @brief Sets common parameters for the supplied esp-netif.
+  *
+  * @param[in]  esp_netif Handle to esp-netif instance
+diff --git components/esp_netif/lwip/esp_netif_lwip.c components/esp_netif/lwip/esp_netif_lwip.c
+index 38c40d39ae..60b9011e79 100644
+--- components/esp_netif/lwip/esp_netif_lwip.c
++++ components/esp_netif/lwip/esp_netif_lwip.c
+@@ -488,7 +488,7 @@ esp_netif_t* esp_netif_get_handle_from_netif_impl(void *dev)
+ void* esp_netif_get_netif_impl(esp_netif_t *esp_netif)
+ {
+     // get impl ptr only for vanilla lwip impl (ppp_pcb not supported)
+-    if (esp_netif && !ESP_NETIF_IS_POINT2POINT_TYPE(esp_netif, PPP_LWIP_NETIF)) {
++    if (esp_netif/* && !ESP_NETIF_IS_POINT2POINT_TYPE(esp_netif, PPP_LWIP_NETIF)*/) {
+         return esp_netif->lwip_netif;
+     }
+     return NULL;
+diff --git components/esp_netif/lwip/esp_netif_lwip_ppp.c components/esp_netif/lwip/esp_netif_lwip_ppp.c
+index 6dc9bb77a2..eae53da687 100644
+--- components/esp_netif/lwip/esp_netif_lwip_ppp.c
++++ components/esp_netif/lwip/esp_netif_lwip_ppp.c
+@@ -34,6 +34,9 @@ typedef struct lwip_peer2peer_ctx {
+     // PPP specific fields follow
+     bool ppp_phase_event_enabled;
+     bool ppp_error_event_enabled;
++#if PPP_SERVER
++    bool ppp_server;
++#endif
+     ppp_pcb *ppp;
+ } lwip_peer2peer_ctx_t;
+ 
+@@ -218,6 +221,60 @@ esp_err_t esp_netif_ppp_set_auth(esp_netif_t *netif, esp_netif_auth_type_t autht
+ #endif
+ }
+ 
++
++#if PPP_SERVER
++esp_err_t esp_netif_ppp_start_server(esp_netif_t *netif, esp_ip4_addr_t localaddr, esp_ip4_addr_t remoteaddr, esp_ip4_addr_t dnsaddr1, esp_ip4_addr_t dnsaddr2, const char *login, const char *password, int auth_req)
++{
++    if (!ESP_NETIF_IS_POINT2POINT_TYPE(netif, PPP_LWIP_NETIF)) {
++        return ESP_ERR_ESP_NETIF_INVALID_PARAMS;
++    }
++    lwip_peer2peer_ctx_t *ppp_ctx = (lwip_peer2peer_ctx_t *)netif->related_data;
++    assert(ppp_ctx->base.netif_type == PPP_LWIP_NETIF);
++
++    /* Set our address */
++    ppp_set_ipcp_ouraddr(ppp_ctx->ppp, &localaddr);
++
++    /* Set peer(his) address */
++    ppp_set_ipcp_hisaddr(ppp_ctx->ppp, &remoteaddr);
++
++    /* Set primary DNS server */
++    ppp_set_ipcp_dnsaddr(ppp_ctx->ppp, 0, &dnsaddr1);
++
++    /* Set secondary DNS server */
++    ppp_set_ipcp_dnsaddr(ppp_ctx->ppp, 1, &dnsaddr2);
++
++#if PPP_AUTH_SUPPORT
++    /* Auth configuration, this is pretty self-explanatory */
++    ppp_set_auth(ppp_ctx->ppp, PPPAUTHTYPE_PAP, login, password);
++
++    /* Require peer to authenticate */
++    ppp_set_auth_required(ppp_ctx->ppp, auth_req);
++#endif
++
++    /*
++    * Only for PPPoS, the PPP session should be up and waiting for input.
++    *
++    * Note: for PPPoS, ppp_connect() and ppp_listen() are actually the same thing.
++    * The listen call is meant for future support of PPPoE and PPPoL2TP server
++    * mode, where we will need to negotiate the incoming PPPoE session or L2TP
++    * session before initiating PPP itself. We need this call because there is
++    * two passive modes for PPPoS, ppp_set_passive and ppp_set_silent.
++    */
++    ppp_set_silent(ppp_ctx->ppp, 0);
++
++
++    /* Make sure we listen instead of connect on start */
++    ppp_ctx->ppp_server = 1;
++
++    /* Dont use this interface as a dns */
++    ppp_set_usepeerdns(ppp_ctx->ppp, 0);
++
++	ppp_listen(ppp_ctx->ppp);
++
++    return ESP_OK;
++}
++#endif
++
+ void esp_netif_ppp_set_default_netif(netif_related_data_t *netif_related)
+ {
+     lwip_peer2peer_ctx_t *ppp_ctx = (lwip_peer2peer_ctx_t *)netif_related;
+@@ -260,10 +317,22 @@ esp_err_t esp_netif_start_ppp(esp_netif_t *esp_netif)
+     lwip_peer2peer_ctx_t *ppp_ctx = (lwip_peer2peer_ctx_t *)netif_related;
+     assert(ppp_ctx->base.netif_type == PPP_LWIP_NETIF);
+ 
+-    ESP_LOGD(TAG, "%s: Starting PPP connection: %p", __func__, ppp_ctx->ppp);
+-    esp_err_t err = pppapi_connect(ppp_ctx->ppp, 0);
++    esp_err_t err;
++
++#if PPP_SERVER
++    if (ppp_ctx->ppp_server) {
++        ESP_LOGD(TAG, "%s: Starting PPP server: %p", __func__, ppp_ctx->ppp);
++        err = ppp_listen(ppp_ctx->ppp);
++    } else
++#endif
++    {
++
++        ESP_LOGD(TAG, "%s: Starting PPP connection: %p", __func__, ppp_ctx->ppp);
++        err = pppapi_connect(ppp_ctx->ppp, 0);
++    }
++
+     if (err != ESP_OK) {
+-        ESP_LOGE(TAG, "%s: PPP connection cannot be started", __func__);
++        ESP_LOGE(TAG, "%s: PPP connection cannot be started code %d", __func__, err);
+         if (ppp_ctx->ppp_error_event_enabled) {
+             esp_event_post(NETIF_PPP_STATUS, NETIF_PPP_CONNECT_FAILED, esp_netif, sizeof(esp_netif), 0);
+         }
+diff --git components/hal/esp32/include/hal/uart_ll.h components/hal/esp32/include/hal/uart_ll.h
+index c0c3294fe0..115132b1ac 100644
+--- components/hal/esp32/include/hal/uart_ll.h
++++ components/hal/esp32/include/hal/uart_ll.h
+@@ -683,6 +683,8 @@ FORCE_INLINE_ATTR void uart_ll_set_mode_irda(uart_dev_t *hw)
+     hw->rs485_conf.rx_busy_tx_en = 0;
+     hw->conf0.sw_rts = 0;
+     hw->conf0.irda_en = 1;
++	hw->conf0.irda_tx_en = 1;
++	hw->conf0.irda_dplx = 1;
+ }
+ 
+ /**
+diff --git components/lwip/Kconfig components/lwip/Kconfig
+index 3fa5456060..07b53dec02 100644
+--- components/lwip/Kconfig
++++ components/lwip/Kconfig
+@@ -783,6 +783,13 @@ menu "LWIP"
+         help
+             Config max number of entries in IPv6 neighbor cache
+ 
++    config LWIP_PPP_SERVER_SUPPORT
++        bool "Enable PPP server support"
++        depends on LWIP_PPP_SUPPORT
++        default n
++        help
++            Enable PPP Server support
++
+     config LWIP_PPP_NOTIFY_PHASE_SUPPORT
+         bool "Enable Notify Phase Callback"
+         depends on LWIP_PPP_SUPPORT
+diff --git components/lwip/port/esp32/include/lwipopts.h components/lwip/port/esp32/include/lwipopts.h
+index e588949166..0cee5186d7 100644
+--- components/lwip/port/esp32/include/lwipopts.h
++++ components/lwip/port/esp32/include/lwipopts.h
+@@ -1032,6 +1032,12 @@ static inline uint32_t timeout_from_offered(uint32_t lease, uint32_t min)
+  */
+ #define PAP_SUPPORT                     CONFIG_LWIP_PPP_PAP_SUPPORT
+ 
++/**
++ * PPP_SERVER==1: Support PPP_SERVER.
++ */
++#define PPP_SERVER                     CONFIG_LWIP_PPP_SERVER_SUPPORT
++
++
+ /**
+  * CHAP_SUPPORT==1: Support CHAP.
+  */
+@@ -1210,7 +1216,7 @@ static inline uint32_t timeout_from_offered(uint32_t lease, uint32_t min)
+ #warning LWIP_HOOK_FILENAME is used for IDF default hooks. Please use ESP_IDF_LWIP_HOOK_FILENAME to insert additional hook
+ #endif
+ #define LWIP_HOOK_FILENAME              "lwip_default_hooks.h"
+-#define LWIP_HOOK_IP4_ROUTE_SRC         ip4_route_src_hook
++/* #define LWIP_HOOK_IP4_ROUTE_SRC         ip4_route_src_hook */
+ #if LWIP_NETCONN_FULLDUPLEX
+ #define LWIP_DONE_SOCK(sock)            done_socket(sock)
+ #else
+diff --git components/lwip/sdkconfig.rename components/lwip/sdkconfig.rename
+index 527363f64b..467037e157 100644
+--- components/lwip/sdkconfig.rename
++++ components/lwip/sdkconfig.rename
+@@ -29,6 +29,7 @@ CONFIG_TCPIP_TASK_AFFINITY_NO_AFFINITY          CONFIG_LWIP_TCPIP_TASK_AFFINITY_
+ CONFIG_TCPIP_TASK_AFFINITY_CPU0                 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0
+ CONFIG_TCPIP_TASK_AFFINITY_CPU1                 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1
+ CONFIG_PPP_SUPPORT                              CONFIG_LWIP_PPP_SUPPORT
++CONFIG_PPP_SERVER_SUPPORT                       CONFIG_LWIP_PPP_SERVER_SUPPORT
+ CONFIG_PPP_NOTIFY_PHASE_SUPPORT                 CONFIG_LWIP_PPP_NOTIFY_PHASE_SUPPORT
+ CONFIG_PPP_PAP_SUPPORT                          CONFIG_LWIP_PPP_PAP_SUPPORT
+ CONFIG_PPP_CHAP_SUPPORT                         CONFIG_LWIP_PPP_CHAP_SUPPORT

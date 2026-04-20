@@ -1,0 +1,106 @@
+menu "Win95 Modem Configuration"
+
+    config WIN95_MODEM_UART_BAUDRATE
+        int "Set baudrate"
+        default 115200
+        range 1200 4000000 if !PM_ENABLE
+        range 1200 1000000 if PM_ENABLE
+        help
+            Default baudrate for serial
+
+    config WIN95_MODEM_UART_FLOW_CONTROL
+        int "Set flowcontrol"
+        default 0
+        range 0 3
+        help
+            0: none, 1: software, 2: hardware
+
+    config WIN95_MODEM_UART_ISR_IN_RAM
+        bool "Use UART ISR in RAM"
+        default n
+        select UART_ISR_IN_IRAM
+        help
+            Enable placing UART ISR to IRAM.
+            This options is useful if PPPoS client needs to perform
+            flash operations (e.g. OTA) while keeping the network operational.
+
+    config WIN95_MODEM_LCP_ECHO
+        bool "Enable LCP ECHO"
+        default n
+        select LWIP_ENABLE_LCP_ECHO
+        help
+            Enable this option to make use of LCP keepalive using
+            LCP_ECHO_INTERVAL and LCP_MAXECHOFAILS to default values
+
+    menu "UART Configuration"
+        config WIN95_MODEM_UART_TX_PIN
+            int "TXD Pin Number"
+            default 22
+            range -1 31
+            help
+                Pin number of UART TX.
+
+        config WIN95_MODEM_UART_RX_PIN
+            int "RXD Pin Number"
+            default 23
+            range -1 31
+            help
+                Pin number of UART RX.
+
+        config WIN95_MODEM_UART_RTS_PIN
+            int "RTS Pin Number"
+            default -1
+            range -1 31
+            help
+                Pin number of UART RTS.
+
+        config WIN95_MODEM_UART_CTS_PIN
+            int "CTS Pin Number"
+            default -1
+            range -1 31
+            help
+                Pin number of UART CTS.
+
+        config WIN95_MODEM_UART_IRDA_MODE
+            bool "Enable IRDA mode"
+            default n
+            help
+                Enable IRDA mode on UART (Advantech PCM-4825)
+
+        config WIN95_MODEM_UART_EVENT_TASK_STACK_SIZE
+            int "UART Event Task Stack Size"
+            range 2000 6000
+            default 3072
+            help
+                Stack size of UART event task.
+
+        config WIN95_MODEM_UART_EVENT_TASK_PRIORITY
+            int "UART Event Task Priority"
+            range 3 22
+            default 5
+            help
+                Priority of UART event task.
+
+        config WIN95_MODEM_UART_EVENT_QUEUE_SIZE
+            int "UART Event Queue Size"
+            range 10 40
+            default 30
+            help
+                Length of UART event queue.
+
+        config WIN95_MODEM_UART_TX_BUFFER_SIZE
+            int "UART TX Buffer Size"
+            range 256 8192
+            default 4096
+            help
+                Buffer size of UART TX buffer.
+
+        config WIN95_MODEM_UART_RX_BUFFER_SIZE
+            int "UART RX Buffer Size"
+            range 256 8192
+            default 4096
+            help
+                Buffer size of UART RX buffer.
+    endmenu
+
+endmenu

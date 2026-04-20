@@ -1,0 +1,9 @@
+version: 0.0.1
+
+#url: https://github.com/wxorx/win95modem
+#issues: https://github.com/wxorx/win95modem/issues
+#documentation: https://github.com/wxorx/win95modem/blob/main/README.md
+#repository: git@github.com:https://github.com/wxorx/win95modem.git
+
+dependencies:
+  idf: ">=5.0.5"

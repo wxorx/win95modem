@@ -8,3 +8,6 @@ patch -p0 < ../../../../lwip.patch
 ./install.sh
 . ./activate.sh
 ./build.sh
+
+
+To exit the IDF Monitor, press "Ctrl+]" on your keyboard. If that doesn't work, you may need to try "Ctrl+AltGr+9" as an alternative.
